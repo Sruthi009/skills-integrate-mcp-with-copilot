@@ -3,6 +3,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
   const messageDiv = document.getElementById("message");
+  const loginBtn = document.getElementById("login-btn");
+  const logoutBtn = document.getElementById("logout-btn");
+  const loginModal = document.getElementById("login-modal");
+  const loginForm = document.getElementById("login-form");
+  const loginCancel = document.getElementById("login-cancel");
+  const loginMessage = document.getElementById("login-message");
 
   // Function to fetch activities from API
   async function fetchActivities() {
@@ -12,6 +18,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
       // Clear loading message
       activitiesList.innerHTML = "";
+
+      const isAdmin = !!localStorage.getItem("admin_token");
 
       // Populate activities list
       Object.entries(activities).forEach(([name, details]) => {
@@ -28,10 +36,12 @@ document.addEventListener("DOMContentLoaded", () => {
               <h5>Participants:</h5>
               <ul class="participants-list">
                 ${details.participants
-                  .map(
-                    (email) =>
-                      `<li><span class="participant-email">${email}</span><button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button></li>`
-                  )
+                  .map((email) => {
+                    const button = isAdmin
+                      ? `<button class="delete-btn" data-activity="${name}" data-email="${email}">❌</button>`
+                      : "";
+                    return `<li><span class="participant-email">${email}</span>${button}</li>`;
+                  })
                   .join("")}
               </ul>
             </div>`
@@ -60,6 +70,9 @@ document.addEventListener("DOMContentLoaded", () => {
       document.querySelectorAll(".delete-btn").forEach((button) => {
         button.addEventListener("click", handleUnregister);
       });
+
+      // Update login/logout UI
+      updateAuthUI();
     } catch (error) {
       activitiesList.innerHTML =
         "<p>Failed to load activities. Please try again later.</p>";
@@ -74,12 +87,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const email = button.getAttribute("data-email");
 
     try {
+      const token = localStorage.getItem("admin_token");
+      const headers = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const response = await fetch(
-        `/activities/${encodeURIComponent(
-          activity
-        )}/unregister?email=${encodeURIComponent(email)}`,
+        `/activities/${encodeURIComponent(activity)}/unregister?email=${encodeURIComponent(email)}`,
         {
           method: "DELETE",
+          headers,
         }
       );
 
@@ -154,6 +170,75 @@ document.addEventListener("DOMContentLoaded", () => {
       console.error("Error signing up:", error);
     }
   });
+
+  // Login handling
+  function showLoginModal() {
+    loginModal.classList.remove("hidden");
+  }
+
+  function hideLoginModal() {
+    loginModal.classList.add("hidden");
+    loginMessage.classList.add("hidden");
+    loginMessage.textContent = "";
+  }
+
+  async function handleLoginSubmit(e) {
+    e.preventDefault();
+    const username = document.getElementById("admin-username").value;
+    const password = document.getElementById("admin-password").value;
+
+    try {
+      const res = await fetch("/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.token) {
+        localStorage.setItem("admin_token", data.token);
+        hideLoginModal();
+        fetchActivities();
+      } else {
+        loginMessage.textContent = data.detail || "Login failed";
+        loginMessage.classList.remove("hidden");
+      }
+    } catch (err) {
+      loginMessage.textContent = "Login request failed";
+      loginMessage.classList.remove("hidden");
+    }
+  }
+
+  async function handleLogout() {
+    const token = localStorage.getItem("admin_token");
+    try {
+      await fetch("/admin/logout", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+    } catch (e) {
+      // ignore
+    }
+    localStorage.removeItem("admin_token");
+    fetchActivities();
+  }
+
+  function updateAuthUI() {
+    const isAdmin = !!localStorage.getItem("admin_token");
+    if (isAdmin) {
+      loginBtn.classList.add("hidden");
+      logoutBtn.classList.remove("hidden");
+    } else {
+      loginBtn.classList.remove("hidden");
+      logoutBtn.classList.add("hidden");
+    }
+  }
+
+  // Event listeners for login UI
+  loginBtn.addEventListener("click", showLoginModal);
+  loginCancel.addEventListener("click", hideLoginModal);
+  loginForm.addEventListener("submit", handleLoginSubmit);
+  logoutBtn.addEventListener("click", handleLogout);
 
   // Initialize app
   fetchActivities();
