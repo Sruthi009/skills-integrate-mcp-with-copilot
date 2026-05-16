@@ -5,11 +5,16 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
+import json
+import uuid
+import time
+from typing import Optional
+from pydantic import BaseModel
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -18,6 +23,60 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# Load teachers from JSON
+current_dir = Path(__file__).parent
+teachers_file = current_dir / "teachers.json"
+teachers_data = {"teachers": []}
+if teachers_file.exists():
+    try:
+        with open(teachers_file, "r", encoding="utf-8") as f:
+            teachers_data = json.load(f)
+    except Exception:
+        teachers_data = {"teachers": []}
+
+# Simple in-memory admin token store: token -> {username, expiry}
+active_admin_tokens = {}
+
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+def _verify_admin_token(token: Optional[str]) -> bool:
+    if not token:
+        return False
+    entry = active_admin_tokens.get(token)
+    if not entry:
+        return False
+    # expiry check (allow 24h)
+    if entry.get("expiry", 0) < time.time():
+        del active_admin_tokens[token]
+        return False
+    return True
+
+
+@app.post("/admin/login")
+def admin_login(payload: LoginPayload):
+    # check credentials against teachers_data
+    for t in teachers_data.get("teachers", []):
+        if t.get("username") == payload.username and t.get("password") == payload.password:
+            token = uuid.uuid4().hex
+            # expire in 24 hours
+            active_admin_tokens[token] = {"username": payload.username, "expiry": time.time() + 24 * 3600}
+            return {"token": token}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+@app.post("/admin/logout")
+def admin_logout(admin_token: Optional[str] = None, authorization: Optional[str] = Header(None)):
+    token = admin_token
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(None, 1)[1]
+    if token and token in active_admin_tokens:
+        del active_admin_tokens[token]
+    return {"message": "logged out"}
 
 # In-memory activity database
 activities = {
@@ -111,7 +170,7 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
+def unregister_from_activity(activity_name: str, email: str, admin_token: Optional[str] = None, authorization: Optional[str] = Header(None)):
     """Unregister a student from an activity"""
     # Validate activity exists
     if activity_name not in activities:
@@ -126,6 +185,14 @@ def unregister_from_activity(activity_name: str, email: str):
             status_code=400,
             detail="Student is not signed up for this activity"
         )
+
+    # Verify admin token from either query param or Authorization header
+    token = admin_token
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(None, 1)[1]
+
+    if not _verify_admin_token(token):
+        raise HTTPException(status_code=403, detail="Admin authorization required to unregister students")
 
     # Remove student
     activity["participants"].remove(email)
